@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>Evolux Dual Injector</title>
+<meta name="viewport" content="width=1920, initial-scale=1, user-scalable=no">
+<style>
+:root {
+  --accent: #005F9B;
+  --stage-w: 1920px;
+  --stage-h: 1080px;
+  --cursor: default;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  background: #000;
+  overflow: hidden;
+  cursor: var(--cursor);
+}
+
+#viewport {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+}
+
+#stage {
+  position: relative;
+  width: var(--stage-w);
+  height: var(--stage-h);
+  background: #000;
+  overflow: hidden;
+  flex: none;
+  /* scale/position is set by JS to fit the real screen */
+}
+
+#slides {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.slide {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  opacity: 0;
+  transform: translateX(0);
+  transition: opacity var(--transition-ms, 600ms) ease, transform var(--transition-ms, 600ms) ease;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Images cut instantly unless navigated via the arrow buttons - see goTo()'s
+   `animate` flag, which toggles this class on #slides for the duration of
+   the jump. */
+#slides.no-transition .slide {
+  transition: none !important;
+}
+
+.slide.current {
+  opacity: 1;
+  transform: translateX(0);
+  pointer-events: auto;
+  z-index: 3;
+}
+
+.slide.next {
+  opacity: 0;
+  transform: translateX(100%);
+  z-index: 2;
+}
+
+.slide.prev {
+  opacity: 0;
+  transform: translateX(-100%);
+  z-index: 2;
+}
+
+/* transitionType: "fade" - same crossfade, just without the horizontal slide-in */
+#stage[data-transition="fade"] .slide.next,
+#stage[data-transition="fade"] .slide.prev {
+  transform: translateX(0);
+}
+
+.slide img,
+.slide video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Kill any chance of native video chrome showing */
+.slide video::-webkit-media-controls,
+.slide video::-webkit-media-controls-enclosure,
+.slide video::-webkit-media-controls-panel {
+  display: none !important;
+  -webkit-appearance: none;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+#progress-track {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.12);
+  z-index: 10;
+}
+
+#progress-track.hidden { display: none; }
+
+#progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  transition: width linear;
+}
+
+#seek-track {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.12);
+  z-index: 10;
+  transition: height 150ms ease;
+}
+
+#seek-track:hover { height: 14px; }
+
+#seek-track.hidden { display: none; }
+
+#seek-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  /* no width transition - a rAF loop already updates this every frame,
+     a CSS transition on top of that just adds lag/choppiness */
+  pointer-events: none;
+}
+
+.nav-arrow {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 52px;
+  height: 52px;
+  border: none;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+  z-index: 20;
+  opacity: 0.75;
+  transition: background 150ms ease, transform 150ms ease, box-shadow 150ms ease, opacity 150ms ease;
+  user-select: none;
+  padding: 0;
+}
+
+.nav-arrow:hover {
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+  opacity: 1;
+}
+.nav-arrow:active { transform: translateY(-50%) scale(0.92); }
+.nav-arrow.hidden { display: none; }
+
+.nav-left { left: 8px; }
+.nav-right { right: 8px; }
+
+.restart-btn {
+  position: absolute;
+  top: 32px;
+  right: 32px;
+  z-index: 25;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.85);
+  color: var(--accent);
+  padding: 12px 18px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  transition: background 150ms ease, transform 150ms ease;
+}
+
+.restart-btn:hover { background: #fff; }
+.restart-btn:active { transform: scale(0.94); }
+.restart-btn.hidden { display: none; }
+</style>
+</head>
+<body>
+
+  <div id="viewport">
+    <div id="stage">
+      <div id="slides"></div>
+
+      <div id="progress-track">
+        <div id="progress-fill"></div>
+      </div>
+
+      <div id="seek-track" class="hidden">
+        <div id="seek-fill"></div>
+      </div>
+
+      <button id="arrow-prev" class="nav-arrow nav-left" aria-label="Zurück" type="button">
+        <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 6 9 12 15 18"></polyline></svg>
+      </button>
+      <button id="arrow-next" class="nav-arrow nav-right" aria-label="Weiter" type="button">
+        <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"></polyline></svg>
+      </button>
+
+      <button id="restart-btn" class="restart-btn hidden" aria-label="Neu starten" type="button">
+        <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="23 4 23 10 17 10"></polyline>
+          <polyline points="1 20 1 14 7 14"></polyline>
+          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+        </svg>
+        <span>RESTART</span>
+      </button>
+    </div>
+  </div>
+
+  <script>
+  (() => {
+    'use strict';
+
+    // Config, inlined so opening this file directly never has to fetch()
+    // config.json - that fetch is what fails with "Failed to fetch" when this
+    // page is opened as a plain file:// page. Kept as an ordinary JS object,
+    // same shape/fields as config.json, so it's still easy to hand-edit here.
+    const CONFIG = {
+      "mediaFolder": "media",
+
+      "source": {
+        "mode": "manifest",
+        "manifestFile": "media/playlist.json"
+      },
+
+      "numbering": {
+        "start": 1,
+        "digits": 2,
+        "maxCount": 50,
+        "stopAtFirstGap": true
+      },
+
+      "extensions": ["jpg", "jpeg", "png", "gif", "webp", "bmp", "mp4", "webm", "mov", "m4v"],
+
+      "slider": {
+        "autoplay": false,
+        "imageDurationMs": 8000
+      },
+
+      "video": {
+        "autoplay": true,
+        "muted": true,
+        "loop": false,
+        "advanceOnEnd": true,
+        "clickTogglesPlayback": true,
+        "showSeekBar": true
+      },
+
+      "transitionType": "fade",
+      "transitionMs": 600,
+      "swipeThresholdPx": 60,
+      "shuffle": false,
+      "showProgressBar": true,
+
+      "cursor": {
+        "style": "pointer"
+      },
+
+      "accentColor": "#005F9B",
+
+      "stage": {
+        "width": 1920,
+        "height": 1080
+      }
+    };
+
+    // Playlist, also inlined (kept in sync with media/playlist.json by
+    // generate-playlist.ps1 - see the PLAYLIST:START/END markers below,
+    // which that script rewrites in place). No fetch() left in this page at
+    // all, so it also works opened directly by double-click, not just through
+    // start-kiosk.ps1.
+    // PLAYLIST:START
+    const PLAYLIST = [
+      "01_Title.jpg",
+      "02_open_blister_pack.jpg",
+      "03_loading_chamber.jpg",
+      "04_submerged_loading_chamber.jpg",
+      "05_OVD_drop.mp4",
+      "06_push_plunger.mp4",
+      "07_closing_loading_chamber.jpg",
+      "08_push_IOL.mp4",
+      "09_IOL_30_seconds.jpg",
+      "10_push_screw.jpg",
+      "11_push_mode.mp4",
+      "11_screw_mode.mp4",
+      "13_injecting.jpg",
+      "14_eye_injection.mp4"
+    ];
+    // PLAYLIST:END
+
+    const IMAGE_EXT = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
+    const VIDEO_EXT = new Set(['mp4', 'webm', 'mov', 'm4v']);
+
+    const stageEl = document.getElementById('stage');
+    const slidesEl = document.getElementById('slides');
+    const progressTrack = document.getElementById('progress-track');
+    const progressFill = document.getElementById('progress-fill');
+    const seekTrack = document.getElementById('seek-track');
+    const seekFill = document.getElementById('seek-fill');
+    const arrowPrev = document.getElementById('arrow-prev');
+    const arrowNext = document.getElementById('arrow-next');
+    const restartBtn = document.getElementById('restart-btn');
+
+    let config = null;
+    let items = [];      // [{ file, type }]
+    let slides = [];      // [{ el, mediaEl, index, type, loaded }]
+    let currentIndex = 0;
+    let imageTimer = null;
+
+    function extOf(name) {
+      const m = /\.([a-z0-9]+)$/i.exec(name);
+      return m ? m[1].toLowerCase() : '';
+    }
+
+    function typeOf(name) {
+      const ext = extOf(name);
+      if (IMAGE_EXT.has(ext)) return 'image';
+      if (VIDEO_EXT.has(ext)) return 'video';
+      return null;
+    }
+
+    // "laser" is a small red glowing dot, built inline so no extra image asset is needed.
+    const LASER_CURSOR_SVG =
+      "<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40'>" +
+      "<defs><radialGradient id='g' cx='50%25' cy='50%25' r='50%25'>" +
+      "<stop offset='0%25' stop-color='%23ff2b2b' stop-opacity='0.9'/>" +
+      "<stop offset='55%25' stop-color='%23ff2b2b' stop-opacity='0.35'/>" +
+      "<stop offset='100%25' stop-color='%23ff2b2b' stop-opacity='0'/>" +
+      "</radialGradient></defs>" +
+      "<circle cx='20' cy='20' r='20' fill='url(%23g)'/>" +
+      "<circle cx='20' cy='20' r='4' fill='%23ff2b2b'/></svg>";
+
+    const CURSOR_PRESETS = {
+      arrow: 'default',
+      pointer: 'pointer',
+      laser: `url("data:image/svg+xml,${LASER_CURSOR_SVG}") 20 20, auto`,
+    };
+
+    function applyCursor() {
+      const style = config.cursor && config.cursor.style;
+      document.documentElement.style.setProperty('--cursor', CURSOR_PRESETS[style] || CURSOR_PRESETS.arrow);
+    }
+
+    const PROBE_TIMEOUT_MS = 3000;
+
+    function probeImage(src) {
+      return new Promise((resolve) => {
+        const img = new Image();
+        const timer = setTimeout(() => resolve(false), PROBE_TIMEOUT_MS);
+        img.onload = () => { clearTimeout(timer); resolve(true); };
+        img.onerror = () => { clearTimeout(timer); resolve(false); };
+        img.src = src;
+      });
+    }
+
+    function probeVideo(src) {
+      return new Promise((resolve) => {
+        const video = document.createElement('video');
+        video.preload = 'metadata';
+        const timer = setTimeout(() => resolve(false), PROBE_TIMEOUT_MS);
+        video.onloadedmetadata = () => { clearTimeout(timer); resolve(true); };
+        video.onerror = () => { clearTimeout(timer); resolve(false); };
+        video.src = src;
+      });
+    }
+
+    function probe(src, type) {
+      return type === 'image' ? probeImage(src) : probeVideo(src);
+    }
+
+    // Files are named "<number>.<ext>" (e.g. 01.jpg, 02.mp4, ...). There is no
+    // folder listing available to browser JS, so we probe each number against
+    // the configured extension list until one loads (or none do).
+    async function discoverItems() {
+      const { start, digits, maxCount } = config.numbering;
+      const stopAtFirstGap = config.numbering.stopAtFirstGap;
+      const found = [];
+
+      for (let n = start; n < start + maxCount; n++) {
+        const num = String(n).padStart(digits, '0');
+        let hit = null;
+
+        for (const ext of config.extensions) {
+          const type = typeOf(`x.${ext}`);
+          if (!type) continue;
+          const file = `${num}.${ext}`;
+          const src = `${config.mediaFolder}/${file}`;
+          // eslint-disable-next-line no-await-in-loop
+          if (await probe(src, type)) {
+            hit = { file, type };
+            break;
+          }
+        }
+
+        if (hit) {
+          found.push(hit);
+        } else if (stopAtFirstGap) {
+          break;
+        }
+      }
+
+      return found;
+    }
+
+    // Alternative to discoverItems(): filenames are kept as-is and simply
+    // listed, in playback order, in the inlined PLAYLIST array above. No
+    // renaming and no fetch() required.
+    function loadManifestItems() {
+      return PLAYLIST
+        .map((file) => ({ file, type: typeOf(file) }))
+        .filter((it) => it.type !== null);
+    }
+
+    function buildSlides() {
+      items.forEach((item, i) => {
+        const slideEl = document.createElement('div');
+        slideEl.className = 'slide';
+        slideEl.dataset.index = String(i);
+        slidesEl.appendChild(slideEl);
+        slides.push({ el: slideEl, mediaEl: null, index: i, type: item.type, loaded: false });
+      });
+    }
+
+    function ensureLoaded(index) {
+      const slide = slides[index];
+      if (slide.loaded) return slide;
+      const item = items[slide.index];
+      const src = `${config.mediaFolder}/${item.file}`;
+
+      let mediaEl;
+      if (slide.type === 'image') {
+        mediaEl = document.createElement('img');
+        mediaEl.src = src;
+        mediaEl.alt = '';
+        mediaEl.draggable = false;
+      } else {
+        mediaEl = document.createElement('video');
+        mediaEl.src = src;
+        mediaEl.muted = config.video.muted;
+        if (config.video.muted) mediaEl.setAttribute('muted', '');
+        mediaEl.setAttribute('playsinline', '');
+        mediaEl.playsInline = true;
+        mediaEl.disablePictureInPicture = true;
+        mediaEl.controls = false;
+        mediaEl.controlsList = 'nodownload nofullscreen noremoteplayback';
+        mediaEl.preload = 'auto';
+        mediaEl.loop = !!config.video.loop;
+        mediaEl.addEventListener('contextmenu', (e) => e.preventDefault());
+        mediaEl.addEventListener('ended', () => onVideoEnded(slide.index));
+      }
+
+      slide.el.appendChild(mediaEl);
+      slide.mediaEl = mediaEl;
+      slide.loaded = true;
+      return slide;
+    }
+
+    function onVideoEnded(index) {
+      if (index !== currentIndex) return;
+      if (config.video.loop) return; // shouldn't fire when looping, but guard anyway
+      if (config.slider.autoplay && config.video.advanceOnEnd) next(false);
+      // Reveal the restart button now, in case this was the last slide (next()
+      // above is a no-op there since goTo() holds at the end).
+      updateArrowVisibility();
+    }
+
+    // 'timeupdate' only fires a handful of times per second, which looked
+    // jerky - drive the seek bar from a rAF loop instead for a smooth 60fps glide.
+    function seekBarTick() {
+      const slide = slides[currentIndex];
+      if (slide && slide.type === 'video' && slide.mediaEl && config.video.showSeekBar) {
+        const video = slide.mediaEl;
+        if (video.duration) {
+          seekFill.style.width = `${(video.currentTime / video.duration) * 100}%`;
+        }
+      }
+      requestAnimationFrame(seekBarTick);
+    }
+
+    function seekCurrentVideo(clientX) {
+      const slide = currentSlide();
+      if (slide.type !== 'video' || !slide.mediaEl || !slide.mediaEl.duration) return;
+      const rect = seekTrack.getBoundingClientRect();
+      const fraction = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+      slide.mediaEl.currentTime = fraction * slide.mediaEl.duration;
+    }
+
+    function clearImageTimer() {
+      if (imageTimer) {
+        clearTimeout(imageTimer);
+        imageTimer = null;
+      }
+      progressFill.style.transition = 'none';
+      progressFill.style.width = '0%';
+    }
+
+    function stopAllPlayback() {
+      slides.forEach((s) => {
+        if (s.type === 'video' && s.mediaEl) {
+          s.mediaEl.pause();
+        }
+      });
+    }
+
+    function updateClasses() {
+      const len = slides.length;
+      slides.forEach((s) => s.el.classList.remove('current', 'next', 'prev'));
+
+      const hasNext = currentIndex < len - 1;
+      const hasPrev = currentIndex > 0;
+
+      ensureLoaded(currentIndex);
+      if (hasNext) ensureLoaded(currentIndex + 1);
+      if (hasPrev) ensureLoaded(currentIndex - 1);
+
+      slides[currentIndex].el.classList.add('current');
+      if (hasNext) slides[currentIndex + 1].el.classList.add('next');
+      if (hasPrev) slides[currentIndex - 1].el.classList.add('prev');
+    }
+
+    function isRestartVisible() {
+      if (currentIndex !== slides.length - 1) return false;
+      const slide = slides[currentIndex];
+      if (slide.type === 'image') return true;
+      // Video: only once it has actually played to the end, not as soon as it's shown.
+      return !!(slide.mediaEl && slide.mediaEl.ended);
+    }
+
+    function updateArrowVisibility() {
+      arrowPrev.classList.toggle('hidden', currentIndex === 0);
+      arrowNext.classList.toggle('hidden', currentIndex === slides.length - 1);
+      restartBtn.classList.toggle('hidden', !isRestartVisible());
+    }
+
+    function activateCurrentSlide() {
+      const slide = slides[currentIndex];
+      clearImageTimer();
+      seekTrack.classList.toggle('hidden', !(slide.type === 'video' && config.video.showSeekBar));
+      seekFill.style.width = '0%';
+
+      if (slide.type === 'image') {
+        const autoAdvance = config.slider.autoplay;
+        progressTrack.classList.toggle('hidden', !(autoAdvance && config.showProgressBar));
+        if (autoAdvance) {
+          if (config.showProgressBar) {
+            // force reflow so the width:0 -> width:100% transition restarts
+            progressFill.style.transition = 'none';
+            progressFill.style.width = '0%';
+            // eslint-disable-next-line no-unused-expressions
+            progressFill.offsetHeight;
+            progressFill.style.transition = `width ${config.slider.imageDurationMs}ms linear`;
+            progressFill.style.width = '100%';
+          }
+          imageTimer = setTimeout(() => next(false), config.slider.imageDurationMs);
+        }
+      } else {
+        progressTrack.classList.add('hidden');
+        const video = slide.mediaEl;
+        video.currentTime = 0;
+        video.loop = !!config.video.loop;
+        if (config.video.autoplay) {
+          video.play().catch(() => {
+            /* Autoplay was blocked; a click on the slide will resume it. */
+          });
+        }
+      }
+    }
+
+    // Images only get the slide/fade transition when navigated via the arrow
+    // buttons (animate=true); swipe, tap, keyboard and auto-advance cut instantly.
+    // Video-to-video transitions still animate regardless (not "bei den Bildern").
+    function goTo(newIndex, animate = true) {
+      if (slides.length === 0) return;
+      const clamped = Math.max(0, Math.min(slides.length - 1, newIndex));
+      if (clamped === currentIndex) return; // already at this end - hold, don't restart it
+
+      const involvesImage = slides[currentIndex].type === 'image' || slides[clamped].type === 'image';
+      const suppress = !animate && involvesImage;
+
+      stopAllPlayback();
+      currentIndex = clamped;
+
+      if (suppress) slidesEl.classList.add('no-transition');
+      updateClasses();
+      if (suppress) {
+        void slidesEl.offsetHeight; // commit the instant jump before re-enabling transitions
+        slidesEl.classList.remove('no-transition');
+      }
+      activateCurrentSlide();
+      updateArrowVisibility();
+    }
+
+    function next(animate = true) { goTo(currentIndex + 1, animate); }
+    function prev(animate = true) { goTo(currentIndex - 1, animate); }
+
+    function showFirstSlide() {
+      currentIndex = 0;
+      updateClasses();
+      activateCurrentSlide();
+      updateArrowVisibility();
+    }
+
+    function currentSlide() {
+      return slides[currentIndex];
+    }
+
+    // --- input handling: click zones (left=prev, right=next) + play/pause for videos ---
+
+    let pointerStart = null;
+
+    // Returns true if it toggled playback (caller should stop there), false if
+    // there was nothing to toggle (not a video, or the feature is off).
+    function toggleCurrentVideoPlayback() {
+      const slide = currentSlide();
+      if (slide.type !== 'video' || !slide.mediaEl || !config.video.clickTogglesPlayback) return false;
+      const video = slide.mediaEl;
+      if (video.paused) video.play().catch(() => {});
+      else video.pause();
+      return true;
+    }
+
+    function handleTap(clientX) {
+      const slide = currentSlide();
+      // While the video hasn't finished, a tap just pauses/resumes it instead
+      // of navigating (a looping video never "ends", so it never falls through).
+      if (slide.type === 'video' && slide.mediaEl && !slide.mediaEl.ended) {
+        if (toggleCurrentVideoPlayback()) return;
+      }
+      const rect = stageEl.getBoundingClientRect();
+      const relX = (clientX - rect.left) / rect.width;
+      if (relX < 0.3) prev(false);
+      else next(false);
+    }
+
+    function onPointerDown(e) {
+      pointerStart = { x: e.clientX, y: e.clientY, t: Date.now() };
+    }
+
+    function onPointerUp(e) {
+      if (!pointerStart) return;
+      const dx = e.clientX - pointerStart.x;
+      const dy = e.clientY - pointerStart.y;
+      const dt = Date.now() - pointerStart.t;
+      pointerStart = null;
+
+      const threshold = config.swipeThresholdPx || 60;
+      if (Math.abs(dx) > threshold && Math.abs(dx) > Math.abs(dy)) {
+        if (dx < 0) next(false); else prev(false);
+        return;
+      }
+      // treat as a tap/click if movement was small
+      if (Math.abs(dx) < 10 && Math.abs(dy) < 10 && dt < 800) {
+        handleTap(e.clientX);
+      }
+    }
+
+    function setupInput() {
+      stageEl.addEventListener('pointerdown', onPointerDown);
+      stageEl.addEventListener('pointerup', onPointerUp);
+      stageEl.addEventListener('contextmenu', (e) => e.preventDefault());
+
+      // Arrow buttons are explicit nav controls - stop their pointer events from
+      // also being interpreted as a tap/swipe on the stage underneath them.
+      [arrowPrev, arrowNext].forEach((btn) => {
+        btn.addEventListener('pointerdown', (e) => e.stopPropagation());
+        btn.addEventListener('pointerup', (e) => e.stopPropagation());
+      });
+      arrowPrev.addEventListener('click', (e) => { e.stopPropagation(); prev(); });
+      arrowNext.addEventListener('click', (e) => { e.stopPropagation(); next(); });
+
+      restartBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+      restartBtn.addEventListener('pointerup', (e) => e.stopPropagation());
+      restartBtn.addEventListener('click', (e) => { e.stopPropagation(); goTo(0); });
+
+      // Seek bar: click jumps the video to that point without pausing/navigating.
+      seekTrack.addEventListener('pointerdown', (e) => e.stopPropagation());
+      seekTrack.addEventListener('pointerup', (e) => e.stopPropagation());
+      seekTrack.addEventListener('click', (e) => { e.stopPropagation(); seekCurrentVideo(e.clientX); });
+
+      let lastEscTime = 0;
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowRight') next(false);
+        if (e.key === 'ArrowLeft') prev(false);
+        if (e.key === 'f' || e.key === 'F') toggleFullscreen();
+        if (e.key === ' ' || e.code === 'Space') {
+          if (toggleCurrentVideoPlayback()) e.preventDefault();
+        }
+        if (e.key === 'Escape') {
+          const now = Date.now();
+          // Double-press within 600ms closes the window. Only works because this
+          // tab never navigates (history stays at length 1) - browsers refuse
+          // window.close() otherwise. Alt+F4 always works as a hard fallback.
+          if (now - lastEscTime < 600) window.close();
+          lastEscTime = now;
+        }
+      });
+    }
+
+    function toggleFullscreen() {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      } else {
+        document.exitFullscreen().catch(() => {});
+      }
+    }
+
+    // --- scale the fixed 1920x1080 stage to fit whatever screen it's shown on ---
+
+    function fitStage() {
+      const w = config.stage.width;
+      const h = config.stage.height;
+      const scale = Math.min(window.innerWidth / w, window.innerHeight / h);
+      stageEl.style.transform = `scale(${scale})`;
+    }
+
+    async function init() {
+      config = CONFIG;
+      document.documentElement.style.setProperty('--accent', config.accentColor);
+      document.documentElement.style.setProperty('--stage-w', `${config.stage.width}px`);
+      document.documentElement.style.setProperty('--stage-h', `${config.stage.height}px`);
+      document.documentElement.style.setProperty('--transition-ms', `${config.transitionMs}ms`);
+      stageEl.dataset.transition = config.transitionType === 'fade' ? 'fade' : 'slide';
+      applyCursor();
+
+      items = config.source.mode === 'manifest'
+        ? await loadManifestItems()
+        : await discoverItems();
+
+      if (items.length === 0) {
+        if (config.source.mode === 'manifest') {
+          throw new Error(
+            `No media found. "${config.source.manifestFile}" is empty or missing entries ` +
+            `(see config.json: source.manifestFile).`
+          );
+        }
+        const { start, digits } = config.numbering;
+        const example = String(start).padStart(digits, '0');
+        throw new Error(
+          `No media found. Expected files like "${config.mediaFolder}/${example}.jpg" ` +
+          `or "${config.mediaFolder}/${example}.mp4" (see config.json: numbering, extensions).`
+        );
+      }
+
+      if (config.shuffle) {
+        for (let i = items.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [items[i], items[j]] = [items[j], items[i]];
+        }
+      }
+
+      buildSlides();
+      setupInput();
+      fitStage();
+      window.addEventListener('resize', fitStage);
+      requestAnimationFrame(seekBarTick);
+
+      toggleFullscreen();
+      showFirstSlide();
+    }
+
+    init().catch((err) => {
+      console.error(err);
+      document.body.innerHTML = `<pre style="color:#f66;padding:20px;">${String(err)}</pre>`;
+    });
+  })();
+  </script>
+</body>
+</html>
